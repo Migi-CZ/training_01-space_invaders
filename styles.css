@@ -1,0 +1,109 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  --bg: #0a0a12;
+  --green: #39ff14;
+  --magenta: #ff41d6;
+  --white: #e8f4e8;
+  --band1: rgba(255, 180, 60, 0.08);
+  --band2: rgba(60, 255, 120, 0.06);
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: linear-gradient(
+    180deg,
+    var(--band1) 0%,
+    transparent 25%,
+    transparent 75%,
+    var(--band2) 100%
+  ),
+    var(--bg);
+  color: var(--green);
+  font-family: "JetBrains Mono", "SF Mono", "Consolas", monospace;
+  font-size: 14px;
+}
+
+.wrap {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  gap: 8px;
+}
+
+.hud-top,
+.hud-bottom {
+  width: min(100%, 768px);
+  max-width: 100%;
+}
+
+.hud-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  letter-spacing: 0.06em;
+}
+
+.hud-top strong,
+.hud-bottom strong {
+  color: var(--white);
+  font-weight: 700;
+}
+
+#statusLine {
+  opacity: 0.75;
+  font-size: 12px;
+}
+
+.crt {
+  position: relative;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  box-shadow:
+    0 0 0 3px #1a1a24,
+    0 0 40px rgba(57, 255, 20, 0.08);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.crt::after {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.12),
+    rgba(0, 0, 0, 0.12) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  opacity: 0.35;
+}
+
+#game {
+  display: block;
+  width: min(90vw, 768px);
+  height: auto;
+  background: #000;
+}
+
+#lives .life-icon {
+  display: inline-block;
+  width: 18px;
+  height: 10px;
+  margin-right: 6px;
+  vertical-align: middle;
+  background: var(--green);
+  clip-path: polygon(10% 100%, 0 40%, 20% 40%, 50% 0, 80% 40%, 100% 40%, 90% 100%);
+}

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Space Invaders</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="hud-top">
+      <div class="hud-row">
+        <span>SCORE <strong id="score">0</strong></span>
+        <span>HIGH <strong id="highScore">0</strong></span>
+      </div>
+    </header>
+
+    <div class="crt">
+      <canvas id="game" width="256" height="288" aria-label="Space Invaders playfield"></canvas>
+    </div>
+
+    <footer class="hud-bottom">
+      <div class="hud-row">
+        <span>LIVES <span id="lives"></span></span>
+        <span id="statusLine">Arrow keys · Space shoot · Enter start · Esc menu · M mute</span>
+      </div>
+    </footer>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

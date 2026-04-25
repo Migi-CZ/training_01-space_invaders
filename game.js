@@ -90,7 +90,7 @@
   let formationX = 40;
   let formationY = 56;
   let alienDir = 1;
-  /** @type {boolean[][]} */
+  /** @type {number[][]} */
   let aliens = [];
 
   let alienMoveAcc = 0;
@@ -143,10 +143,11 @@
   }
 
   function initAliens() {
+    const rowHealth = buildRowHealthForLevel(level);
     aliens = [];
     for (let r = 0; r < ROWS; r++) {
       const row = [];
-      for (let c = 0; c < COLS; c++) row.push(true);
+      for (let c = 0; c < COLS; c++) row.push(rowHealth[r]);
       aliens.push(row);
     }
     formationX = 24;
@@ -157,6 +158,36 @@
     mysteryAcc = 0;
     mysteryShip = null;
     syncAlienSpeed();
+  }
+
+  function shuffledRowIndices() {
+    const rows = [];
+    for (let r = 0; r < ROWS; r++) rows.push(r);
+    for (let i = rows.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      const tmp = rows[i];
+      rows[i] = rows[j];
+      rows[j] = tmp;
+    }
+    return rows;
+  }
+
+  function buildRowHealthForLevel(levelValue) {
+    const health = new Array(ROWS).fill(1);
+    if (levelValue <= 1) return health;
+
+    // Level 2 -> two random tougher rows, level 3 -> three, etc.
+    // Above ROWS, extra "tier points" keep stacking into higher HP.
+    const extraTierPoints = levelValue;
+    const fullTierBoost = Math.floor(extraTierPoints / ROWS);
+    const partialBoostRows = extraTierPoints % ROWS;
+    const shuffledRows = shuffledRowIndices();
+
+    for (let r = 0; r < ROWS; r++) health[r] += fullTierBoost;
+    for (let i = 0; i < partialBoostRows; i++) {
+      health[shuffledRows[i]] += 1;
+    }
+    return health;
   }
 
   function initBunkers() {
@@ -206,7 +237,7 @@
   function countAliens() {
     let n = 0;
     for (let r = 0; r < ROWS; r++)
-      for (let c = 0; c < COLS; c++) if (aliens[r][c]) n++;
+      for (let c = 0; c < COLS; c++) if (aliens[r][c] > 0) n++;
     return n;
   }
 
@@ -217,7 +248,7 @@
       maxR = -1;
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
-        if (!aliens[r][c]) continue;
+        if (aliens[r][c] <= 0) continue;
         minC = Math.min(minC, c);
         maxC = Math.max(maxC, c);
         minR = Math.min(minR, r);
@@ -542,14 +573,17 @@
       if (!hit) {
         outer: for (let r = 0; r < ROWS && !hit; r++) {
           for (let c = 0; c < COLS && !hit; c++) {
-            if (!aliens[r][c]) continue;
+            if (aliens[r][c] <= 0) continue;
             const ar = alienWorldRect(r, c);
             if (collideRect(bulletRect, ar)) {
-              aliens[r][c] = false;
-              addScore(ROW_POINTS[r]);
+              aliens[r][c] = Math.max(0, aliens[r][c] - 1);
+              if (aliens[r][c] === 0) {
+                addScore(ROW_POINTS[r]);
+                syncAlienSpeed();
+              }
               hit = true;
-              syncAlienSpeed();
-              beep(140 + r * 15, 0.05, "square", 0.06);
+              const hitFreq = aliens[r][c] === 0 ? 140 + r * 15 : 220 + r * 18;
+              beep(hitFreq, 0.05, "square", 0.06);
               break outer;
             }
           }
@@ -759,13 +793,16 @@
           ctx.fillRect(px + x, py + y + (kind === 2 ? 1 : 0), 1, 1);
   }
 
-  function drawAlien(r, c, tick) {
+  function drawAlien(r, c, tick, hp) {
     const { x, y } = alienWorldRect(r, c);
     const frame = Math.floor(tick * 3) % 2;
     let color = "#ff6bd6";
     if (r >= 4) color = "#ff3040";
     else if (r >= 2) color = "#ff41a8";
     else color = "#ff41d6";
+    if (hp >= 4) color = "#ffffff";
+    else if (hp === 3) color = "#ffd447";
+    else if (hp === 2) color = "#7ec8ff";
     const kind = r >= 4 ? 2 : r >= 2 ? 1 : 0;
     drawAlienSprite(kind, frame, x, y, color);
   }
@@ -811,7 +848,7 @@
 
     for (let r = 0; r < ROWS; r++)
       for (let c = 0; c < COLS; c++)
-        if (aliens[r][c]) drawAlien(r, c, animFrame.tick);
+        if (aliens[r][c] > 0) drawAlien(r, c, animFrame.tick, aliens[r][c]);
 
     if (mysteryShip) {
       ctx.fillStyle = "#ff3040";

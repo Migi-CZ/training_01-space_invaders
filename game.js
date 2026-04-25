@@ -5,7 +5,9 @@
   const ctx = canvas.getContext("2d");
   const elScore = document.getElementById("score");
   const elHigh = document.getElementById("highScore");
+  const elLevel = document.getElementById("level");
   const elLives = document.getElementById("lives");
+  const elBuffs = document.getElementById("buffsLine");
   const elStatus = document.getElementById("statusLine");
 
   const W = canvas.width;
@@ -26,16 +28,61 @@
   const PLAYER_SPEED = 85;
   const PLAYER_Y = H - 28;
   const BULLET_SPEED = 200;
+  const BASE_FIRE_COOLDOWN = 0.35;
   const BOMB_SPEED = 70;
+  const LEVEL_SCORE_BASE_STEP = 500;
+  const LEVEL_SCORE_STEP_GROWTH = 200;
+  const TEMP_BUFF_DURATION = 15;
   /** Vertical drop when formation hits screen edge (smaller = slower descent). */
   const FORMATION_DROP = 10;
 
-  /** @type {'title'|'playing'|'wave_clear'|'gameover'|'win'} */
+  /** @type {'title'|'playing'|'wave_clear'|'upgrade_select'|'gameover'|'win'} */
   let phase = "title";
   let score = 0;
   let highScore = Number(localStorage.getItem("si-high") || 0) || 0;
   let lives = 3;
   let wave = 1;
+  let level = 1;
+  let nextLevelScore = LEVEL_SCORE_BASE_STEP;
+  function levelStepFor(levelValue) {
+    return LEVEL_SCORE_BASE_STEP + (levelValue - 1) * LEVEL_SCORE_STEP_GROWTH;
+  }
+
+  let pendingLevelUps = 0;
+  let gameTime = 0;
+
+  const upgrades = [
+    { id: "extra_life", label: "+1 LIFE", description: "Gain one extra life." },
+    {
+      id: "double_shot",
+      label: "DOUBLE SHOT",
+      description: "Ship fires two bullets at once.",
+    },
+    {
+      id: "rapid_fire",
+      label: "RAPID FIRE",
+      description: "Higher fire rate (stackable).",
+    },
+    {
+      id: "shield",
+      label: "TEMP SHIELD",
+      description: "Ignore enemy bombs for 15 seconds.",
+    },
+    {
+      id: "score_boost",
+      label: "2X SCORE",
+      description: "Double points for 15 seconds.",
+    },
+  ];
+
+  let hasDoubleShot = false;
+  let fireRateMultiplier = 1;
+  let shieldUntil = 0;
+  let scoreBoostUntil = 0;
+  let fireCooldown = 0;
+  let offeredUpgrades = [];
+  let upgradeCursor = 0;
+  let levelBanner = null;
 
   /** @type {{keys: Record<string,boolean>, edge: Record<string,boolean>}} */
   const input = { keys: {}, edge: {} };
@@ -43,7 +90,7 @@
   let formationX = 40;
   let formationY = 56;
   let alienDir = 1;
-  /** @type {boolean[][]} */
+  /** @type {number[][]} */
   let aliens = [];
 
   let alienMoveAcc = 0;
@@ -57,8 +104,8 @@
 
   let playerX = W / 2 - PLAYER_W / 2;
 
-  /** @type {{ x: number, y: number, active: boolean } | null} */
-  let playerBullet = null;
+  /** @type {{ x: number, y: number, vx: number }[]} */
+  let playerBullets = [];
 
   /** @type {{ x: number, y: number }[]} */
   let bombs = [];
@@ -96,10 +143,11 @@
   }
 
   function initAliens() {
+    const rowHealth = buildRowHealthForLevel(level);
     aliens = [];
     for (let r = 0; r < ROWS; r++) {
       const row = [];
-      for (let c = 0; c < COLS; c++) row.push(true);
+      for (let c = 0; c < COLS; c++) row.push(rowHealth[r]);
       aliens.push(row);
     }
     formationX = 24;
@@ -110,6 +158,36 @@
     mysteryAcc = 0;
     mysteryShip = null;
     syncAlienSpeed();
+  }
+
+  function shuffledRowIndices() {
+    const rows = [];
+    for (let r = 0; r < ROWS; r++) rows.push(r);
+    for (let i = rows.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      const tmp = rows[i];
+      rows[i] = rows[j];
+      rows[j] = tmp;
+    }
+    return rows;
+  }
+
+  function buildRowHealthForLevel(levelValue) {
+    const health = new Array(ROWS).fill(1);
+    if (levelValue <= 1) return health;
+
+    // Level 2 -> two random tougher rows, level 3 -> three, etc.
+    // Above ROWS, extra "tier points" keep stacking into higher HP.
+    const extraTierPoints = levelValue;
+    const fullTierBoost = Math.floor(extraTierPoints / ROWS);
+    const partialBoostRows = extraTierPoints % ROWS;
+    const shuffledRows = shuffledRowIndices();
+
+    for (let r = 0; r < ROWS; r++) health[r] += fullTierBoost;
+    for (let i = 0; i < partialBoostRows; i++) {
+      health[shuffledRows[i]] += 1;
+    }
+    return health;
   }
 
   function initBunkers() {
@@ -159,7 +237,7 @@
   function countAliens() {
     let n = 0;
     for (let r = 0; r < ROWS; r++)
-      for (let c = 0; c < COLS; c++) if (aliens[r][c]) n++;
+      for (let c = 0; c < COLS; c++) if (aliens[r][c] > 0) n++;
     return n;
   }
 
@@ -170,7 +248,7 @@
       maxR = -1;
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
-        if (!aliens[r][c]) continue;
+        if (aliens[r][c] <= 0) continue;
         minC = Math.min(minC, c);
         maxC = Math.max(maxC, c);
         minR = Math.min(minR, r);
@@ -196,13 +274,110 @@
     return { x, y, w: ALIEN_W, h: ALIEN_H };
   }
 
-  function tryShootPlayer() {
-    if (playerBullet && playerBullet.active) return;
-    playerBullet = {
-      x: playerX + PLAYER_W / 2 - 1,
-      y: PLAYER_Y - 4,
-      active: true,
+  function triggerLevelBanner(title, subtitle) {
+    levelBanner = {
+      title,
+      subtitle,
+      elapsed: 0,
+      duration: 1.6,
     };
+  }
+
+  function isShieldActive() {
+    return shieldUntil > gameTime;
+  }
+
+  function isScoreBoostActive() {
+    return scoreBoostUntil > gameTime;
+  }
+
+  function addScore(points) {
+    const mult = isScoreBoostActive() ? 2 : 1;
+    score += points * mult;
+    while (score >= nextLevelScore) {
+      level += 1;
+      pendingLevelUps += 1;
+      nextLevelScore += levelStepFor(level);
+    }
+    if (phase === "playing" && pendingLevelUps > 0) {
+      beginUpgradeSelection();
+    }
+  }
+
+  function pickUpgradeOffers(count) {
+    const pool = upgrades.slice();
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      const tmp = pool[i];
+      pool[i] = pool[j];
+      pool[j] = tmp;
+    }
+    return pool.slice(0, Math.min(count, pool.length));
+  }
+
+  function applyUpgrade(upgradeId) {
+    switch (upgradeId) {
+      case "extra_life":
+        lives += 1;
+        renderLives();
+        beep(700, 0.08, "triangle", 0.06);
+        break;
+      case "double_shot":
+        hasDoubleShot = true;
+        beep(620, 0.08, "square", 0.06);
+        break;
+      case "rapid_fire":
+        fireRateMultiplier = Math.min(2.3, fireRateMultiplier + 0.35);
+        beep(760, 0.08, "square", 0.06);
+        break;
+      case "shield":
+        shieldUntil = Math.max(shieldUntil, gameTime + TEMP_BUFF_DURATION);
+        beep(430, 0.09, "triangle", 0.06);
+        break;
+      case "score_boost":
+        scoreBoostUntil = Math.max(
+          scoreBoostUntil,
+          gameTime + TEMP_BUFF_DURATION
+        );
+        beep(560, 0.09, "triangle", 0.06);
+        break;
+      default:
+        break;
+    }
+  }
+
+  function beginUpgradeSelection() {
+    if (pendingLevelUps <= 0 || phase !== "playing") return;
+    pendingLevelUps -= 1;
+    offeredUpgrades = pickUpgradeOffers(3);
+    upgradeCursor = 0;
+    phase = "upgrade_select";
+    elStatus.textContent = `Level ${level} reached! Choose an upgrade`;
+    triggerLevelBanner(`LEVEL ${level}`, "UPGRADE READY");
+  }
+
+  function chooseUpgrade(index) {
+    if (phase !== "upgrade_select" || !offeredUpgrades.length) return;
+    const safeIndex = Math.max(0, Math.min(index, offeredUpgrades.length - 1));
+    const selected = offeredUpgrades[safeIndex];
+    applyUpgrade(selected.id);
+    triggerLevelBanner(`LEVEL ${level}`, selected.label);
+    offeredUpgrades = [];
+    phase = "playing";
+    elStatus.textContent = `Wave ${wave}`;
+    if (pendingLevelUps > 0) beginUpgradeSelection();
+  }
+
+  function tryShootPlayer() {
+    if (fireCooldown > 0) return;
+    const centerX = playerX + PLAYER_W / 2 - 1;
+    if (hasDoubleShot) {
+      playerBullets.push({ x: centerX - 4, y: PLAYER_Y - 4, vx: -14 });
+      playerBullets.push({ x: centerX + 4, y: PLAYER_Y - 4, vx: 14 });
+    } else {
+      playerBullets.push({ x: centerX, y: PLAYER_Y - 4, vx: 0 });
+    }
+    fireCooldown = BASE_FIRE_COOLDOWN / fireRateMultiplier;
     beep(520, 0.06, "square", 0.05);
   }
 
@@ -285,6 +460,7 @@
   }
 
   function update(dt) {
+    const edge = input.edge;
     input.edge = {};
 
     if (phase === "title") {
@@ -295,11 +471,35 @@
       if (input.keys["Enter"] || input.keys["KeyR"]) resetToTitle();
       return;
     }
+    if (levelBanner) {
+      levelBanner.elapsed += dt;
+      if (levelBanner.elapsed >= levelBanner.duration) levelBanner = null;
+    }
     if (phase === "wave_clear") {
+      return;
+    }
+    if (phase === "upgrade_select") {
+      if (!offeredUpgrades.length) {
+        phase = "playing";
+        return;
+      }
+      if (edge["ArrowLeft"] || edge["KeyA"]) {
+        upgradeCursor =
+          (upgradeCursor - 1 + offeredUpgrades.length) % offeredUpgrades.length;
+      }
+      if (edge["ArrowRight"] || edge["KeyD"]) {
+        upgradeCursor = (upgradeCursor + 1) % offeredUpgrades.length;
+      }
+      if (edge["Digit1"]) chooseUpgrade(0);
+      else if (edge["Digit2"]) chooseUpgrade(1);
+      else if (edge["Digit3"]) chooseUpgrade(2);
+      else if (edge["Enter"] || edge["Space"]) chooseUpgrade(upgradeCursor);
       return;
     }
 
     if (phase !== "playing") return;
+    gameTime += dt;
+    fireCooldown = Math.max(0, fireCooldown - dt);
 
     if (input.keys["ArrowLeft"]) playerX -= PLAYER_SPEED * dt;
     if (input.keys["ArrowRight"]) playerX += PLAYER_SPEED * dt;
@@ -340,11 +540,13 @@
     maybeMystery(dt);
     updateMystery(dt);
 
-    if (playerBullet && playerBullet.active) {
-      playerBullet.y -= BULLET_SPEED * dt;
+    for (let i = playerBullets.length - 1; i >= 0; i--) {
+      const bullet = playerBullets[i];
+      bullet.y -= BULLET_SPEED * dt;
+      bullet.x += bullet.vx * dt;
       const bulletRect = {
-        x: playerBullet.x,
-        y: playerBullet.y,
+        x: bullet.x,
+        y: bullet.y,
         w: 2,
         h: 8,
       };
@@ -360,7 +562,7 @@
         };
         if (collideRect(bulletRect, mr)) {
           const bonus = [50, 100, 150, 300][(Math.random() * 4) | 0];
-          score += bonus;
+          addScore(bonus);
           mysteryShip = null;
           mysteryAcc = 0;
           hit = true;
@@ -371,14 +573,17 @@
       if (!hit) {
         outer: for (let r = 0; r < ROWS && !hit; r++) {
           for (let c = 0; c < COLS && !hit; c++) {
-            if (!aliens[r][c]) continue;
+            if (aliens[r][c] <= 0) continue;
             const ar = alienWorldRect(r, c);
             if (collideRect(bulletRect, ar)) {
-              aliens[r][c] = false;
-              score += ROW_POINTS[r];
+              aliens[r][c] = Math.max(0, aliens[r][c] - 1);
+              if (aliens[r][c] === 0) {
+                addScore(ROW_POINTS[r]);
+                syncAlienSpeed();
+              }
               hit = true;
-              syncAlienSpeed();
-              beep(140 + r * 15, 0.05, "square", 0.06);
+              const hitFreq = aliens[r][c] === 0 ? 140 + r * 15 : 220 + r * 18;
+              beep(hitFreq, 0.05, "square", 0.06);
               break outer;
             }
           }
@@ -386,8 +591,8 @@
       }
 
       if (!hit) {
-        const bx = playerBullet.x + 1;
-        const by = playerBullet.y + 4;
+        const bx = bullet.x + 1;
+        const by = bullet.y + 4;
         for (const bunker of bunkers) {
           if (damageBunkerAtWorld(bunker, bx, by)) {
             hit = true;
@@ -396,22 +601,35 @@
         }
       }
 
-      if (playerBullet.y < 12 || hit) playerBullet = null;
-
-      if (countAliens() === 0) {
-        phase = "wave_clear";
-        mysteryShip = null;
-        wave++;
-        if (waveClearTimeoutId !== null) clearTimeout(waveClearTimeoutId);
-        waveClearTimeoutId = setTimeout(() => {
-          waveClearTimeoutId = null;
-          initAliens();
-          bombs = [];
-          playerBullet = null;
-          phase = "playing";
-          elStatus.textContent = `Wave ${wave}`;
-        }, 650);
+      if (bullet.y < 12 || bullet.x < -2 || bullet.x > W + 2 || hit) {
+        playerBullets.splice(i, 1);
       }
+    }
+    if (phase === "upgrade_select") {
+      elScore.textContent = String(score);
+      if (score > highScore) {
+        highScore = score;
+        localStorage.setItem("si-high", String(highScore));
+      }
+      elHigh.textContent = String(highScore);
+      elLevel.textContent = String(level);
+      renderBuffs();
+      return;
+    }
+
+    if (countAliens() === 0) {
+      phase = "wave_clear";
+      mysteryShip = null;
+      wave++;
+      if (waveClearTimeoutId !== null) clearTimeout(waveClearTimeoutId);
+      waveClearTimeoutId = setTimeout(() => {
+        waveClearTimeoutId = null;
+        initAliens();
+        bombs = [];
+        playerBullets = [];
+        phase = "playing";
+        elStatus.textContent = `Wave ${wave}`;
+      }, 650);
     }
 
     for (let i = bombs.length - 1; i >= 0; i--) {
@@ -436,7 +654,11 @@
       const pr = { x: playerX, y: PLAYER_Y, w: PLAYER_W, h: PLAYER_H };
       if (collideRect(br, pr)) {
         bombs.splice(i, 1);
-        loseLife();
+        if (isShieldActive()) {
+          beep(260, 0.05, "triangle", 0.06);
+        } else {
+          loseLife();
+        }
         continue;
       }
     }
@@ -447,6 +669,8 @@
       localStorage.setItem("si-high", String(highScore));
     }
     elHigh.textContent = String(highScore);
+    elLevel.textContent = String(level);
+    renderBuffs();
     renderLives();
   }
 
@@ -454,7 +678,7 @@
     lives -= 1;
     beep(90, 0.2, "sawtooth", 0.08);
     bombs = [];
-    playerBullet = null;
+    playerBullets = [];
     renderLives();
     if (lives <= 0) endGame(false);
     else {
@@ -477,14 +701,27 @@
     score = 0;
     lives = 3;
     wave = 1;
+    level = 1;
+    nextLevelScore = LEVEL_SCORE_BASE_STEP;
+    pendingLevelUps = 0;
+    gameTime = 0;
+    hasDoubleShot = false;
+    fireRateMultiplier = 1;
+    shieldUntil = 0;
+    scoreBoostUntil = 0;
+    fireCooldown = 0;
+    offeredUpgrades = [];
+    levelBanner = null;
     phase = "playing";
     playerX = W / 2 - PLAYER_W / 2;
-    playerBullet = null;
+    playerBullets = [];
     bombs = [];
     initAliens();
     initBunkers();
     elScore.textContent = "0";
     elHigh.textContent = String(highScore);
+    elLevel.textContent = String(level);
+    renderBuffs();
     renderLives();
     elStatus.textContent = `Wave ${wave}`;
   }
@@ -495,12 +732,26 @@
       waveClearTimeoutId = null;
     }
     bombs = [];
-    playerBullet = null;
+    playerBullets = [];
     mysteryShip = null;
+    offeredUpgrades = [];
+    levelBanner = null;
     phase = "title";
     elStatus.textContent =
       "Arrow keys · Space shoot · Enter start · Esc menu · M mute";
+    elLevel.textContent = "1";
+    elBuffs.textContent = "";
     renderLives();
+  }
+
+  function renderBuffs() {
+    const buffs = [];
+    if (isShieldActive()) buffs.push(`Shield ${Math.ceil(shieldUntil - gameTime)}s`);
+    if (isScoreBoostActive())
+      buffs.push(`2x Score ${Math.ceil(scoreBoostUntil - gameTime)}s`);
+    if (hasDoubleShot) buffs.push("Double Shot");
+    if (fireRateMultiplier > 1) buffs.push(`Rapid x${fireRateMultiplier.toFixed(1)}`);
+    elBuffs.textContent = buffs.join(" · ");
   }
 
   function renderLives() {
@@ -542,13 +793,16 @@
           ctx.fillRect(px + x, py + y + (kind === 2 ? 1 : 0), 1, 1);
   }
 
-  function drawAlien(r, c, tick) {
+  function drawAlien(r, c, tick, hp) {
     const { x, y } = alienWorldRect(r, c);
     const frame = Math.floor(tick * 3) % 2;
     let color = "#ff6bd6";
     if (r >= 4) color = "#ff3040";
     else if (r >= 2) color = "#ff41a8";
     else color = "#ff41d6";
+    if (hp >= 4) color = "#ffffff";
+    else if (hp === 3) color = "#ffd447";
+    else if (hp === 2) color = "#7ec8ff";
     const kind = r >= 4 ? 2 : r >= 2 ? 1 : 0;
     drawAlienSprite(kind, frame, x, y, color);
   }
@@ -594,7 +848,7 @@
 
     for (let r = 0; r < ROWS; r++)
       for (let c = 0; c < COLS; c++)
-        if (aliens[r][c]) drawAlien(r, c, animFrame.tick);
+        if (aliens[r][c] > 0) drawAlien(r, c, animFrame.tick, aliens[r][c]);
 
     if (mysteryShip) {
       ctx.fillStyle = "#ff3040";
@@ -604,14 +858,15 @@
 
     drawPlayer();
 
-    if (playerBullet && playerBullet.active) {
-      ctx.fillStyle = "#39ff14";
-      ctx.fillRect(playerBullet.x, playerBullet.y, 2, 8);
-    }
+    ctx.fillStyle = "#39ff14";
+    for (const bullet of playerBullets) ctx.fillRect(bullet.x, bullet.y, 2, 8);
 
     ctx.fillStyle = "#39ff14";
     for (const bomb of bombs) ctx.fillRect(bomb.x - 1, bomb.y, 3, 10);
 
+    if (phase === "upgrade_select") {
+      drawUpgradeMenu();
+    }
     if (phase === "gameover") {
       overlayMessage("GAME OVER");
     } else if (phase === "win") {
@@ -619,6 +874,61 @@
     } else if (phase === "wave_clear") {
       overlayMessage(`WAVE ${wave}`, 0.85);
     }
+    drawLevelBanner();
+  }
+
+  function drawUpgradeMenu() {
+    ctx.fillStyle = "rgba(0,0,0,0.72)";
+    ctx.fillRect(12, 64, W - 24, H - 124);
+    ctx.strokeStyle = "#39ff14";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(12.5, 64.5, W - 25, H - 125);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#39ff14";
+    ctx.font = "bold 11px monospace";
+    ctx.fillText(`LEVEL ${level} UPGRADE`, W / 2, 82);
+    ctx.font = "8px monospace";
+    ctx.fillStyle = "#e8f4e8";
+    ctx.fillText("Arrows / 1-3 / Enter", W / 2, 93);
+
+    for (let i = 0; i < offeredUpgrades.length; i++) {
+      const option = offeredUpgrades[i];
+      const y = 118 + i * 48;
+      const selected = i === upgradeCursor;
+      ctx.fillStyle = selected ? "rgba(57,255,20,0.16)" : "rgba(255,255,255,0.04)";
+      ctx.fillRect(24, y - 14, W - 48, 36);
+      ctx.strokeStyle = selected ? "#39ff14" : "rgba(232,244,232,0.35)";
+      ctx.strokeRect(24.5, y - 13.5, W - 49, 35);
+
+      ctx.textAlign = "left";
+      ctx.fillStyle = selected ? "#39ff14" : "#e8f4e8";
+      ctx.font = "bold 10px monospace";
+      ctx.fillText(`${i + 1}. ${option.label}`, 30, y);
+      ctx.font = "8px monospace";
+      ctx.fillStyle = "#d8e7d8";
+      ctx.fillText(option.description, 30, y + 12);
+    }
+  }
+
+  function drawLevelBanner() {
+    if (!levelBanner) return;
+    const p = Math.min(1, levelBanner.elapsed / levelBanner.duration);
+    const fade = p < 0.2 ? p / 0.2 : p > 0.82 ? (1 - p) / 0.18 : 1;
+    const y = 28 - (1 - Math.min(1, p * 3)) * 16;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, fade));
+    ctx.fillStyle = "rgba(0,0,0,0.75)";
+    ctx.fillRect(36, y - 14, W - 72, 28);
+    ctx.strokeStyle = "#39ff14";
+    ctx.strokeRect(36.5, y - 13.5, W - 73, 27);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#39ff14";
+    ctx.font = "bold 10px monospace";
+    ctx.fillText(levelBanner.title, W / 2, y - 1);
+    ctx.font = "8px monospace";
+    ctx.fillStyle = "#e8f4e8";
+    ctx.fillText(levelBanner.subtitle, W / 2, y + 9);
+    ctx.restore();
   }
 
   function overlayMessage(msg, alpha = 1) {
@@ -654,6 +964,8 @@
     if (k === "KeyM") {
       muted = !muted;
       elStatus.textContent = muted ? "Muted (M to unmute)" : `Wave ${wave}`;
+      if (phase === "upgrade_select" && !muted)
+        elStatus.textContent = `Level ${level} reached! Choose an upgrade`;
       if (phase === "title")
         elStatus.textContent = muted
           ? "Muted"
@@ -661,7 +973,7 @@
     }
     if (
       k === "Escape" &&
-      (phase === "playing" || phase === "wave_clear")
+      (phase === "playing" || phase === "wave_clear" || phase === "upgrade_select")
     ) {
       e.preventDefault();
       resetToTitle();
@@ -672,6 +984,8 @@
   });
 
   elHigh.textContent = String(highScore);
+  elLevel.textContent = "1";
+  renderBuffs();
   renderLives();
   requestAnimationFrame(frame);
 })();

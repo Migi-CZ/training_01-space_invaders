@@ -65,6 +65,14 @@ body {
   font-size: 12px;
 }
 
+#buffsLine {
+  opacity: 0.9;
+  font-size: 12px;
+  color: var(--white);
+  min-width: 120px;
+  text-align: center;
+}
+
 .crt {
   position: relative;
   image-rendering: pixelated;

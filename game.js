@@ -30,7 +30,8 @@
   const BULLET_SPEED = 200;
   const BASE_FIRE_COOLDOWN = 0.35;
   const BOMB_SPEED = 70;
-  const LEVEL_SCORE_STEP = 500;
+  const LEVEL_SCORE_BASE_STEP = 500;
+  const LEVEL_SCORE_STEP_GROWTH = 200;
   const TEMP_BUFF_DURATION = 15;
   /** Vertical drop when formation hits screen edge (smaller = slower descent). */
   const FORMATION_DROP = 10;
@@ -42,7 +43,11 @@
   let lives = 3;
   let wave = 1;
   let level = 1;
-  let nextLevelScore = LEVEL_SCORE_STEP;
+  let nextLevelScore = LEVEL_SCORE_BASE_STEP;
+  function levelStepFor(levelValue) {
+    return LEVEL_SCORE_BASE_STEP + (levelValue - 1) * LEVEL_SCORE_STEP_GROWTH;
+  }
+
   let pendingLevelUps = 0;
   let gameTime = 0;
 
@@ -261,7 +266,7 @@
     while (score >= nextLevelScore) {
       level += 1;
       pendingLevelUps += 1;
-      nextLevelScore += LEVEL_SCORE_STEP;
+      nextLevelScore += levelStepFor(level);
     }
     if (phase === "playing" && pendingLevelUps > 0) {
       beginUpgradeSelection();
@@ -663,7 +668,7 @@
     lives = 3;
     wave = 1;
     level = 1;
-    nextLevelScore = LEVEL_SCORE_STEP;
+    nextLevelScore = LEVEL_SCORE_BASE_STEP;
     pendingLevelUps = 0;
     gameTime = 0;
     hasDoubleShot = false;
